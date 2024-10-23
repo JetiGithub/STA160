@@ -1,0 +1,564 @@
+---
+title: "STA_160FP_part2"
+author: "Johnson Tian"
+date: "2024-06-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(baseballr)
+library(ggplot2)
+library(reshape2)
+library(zoo)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(tseries)
+library(tidyverse)
+library(tidyverse)
+library(randomForest)
+library(tidyverse)
+library(xgboost)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(pheatmap)
+library(glmnet)
+player <- read.csv("~/player.csv")
+player_17 <- read.csv("~/player_17.csv")
+player_18 <- read.csv("~/player_18.csv")
+player_19 <- read.csv("~/player_19.csv")
+player_20 <- read.csv("~/player_20.csv")
+player_21 <- read.csv("~/player_21.csv")
+daily_avg_speed <- read.csv("~/daily_avg_speed.csv")
+player <- player %>%
+  drop_na(release_speed, release_pos_x, release_pos_z, pfx_x, pfx_z, vx0, vy0, vz0, ax, ay, az)
+
+player <- player %>%
+  mutate(
+    release_pos = release_pos_x * release_pos_z,
+    pfx_interact = pfx_x * pfx_z,
+    vx_vy_interact = vx0 * vy0,
+    ax_ay_az_interact = ax * ay * az
+  )
+
+player_linear_model_pure_combined <- player %>%
+  select(release_speed, release_pos, pfx_interact, vx_vy_interact, ax_ay_az_interact, vz0)
+```
+
+```{r}
+#svr model
+library(tidyverse)
+library(e1071)
+
+
+player_linear_model_pure_combined <- player %>%
+  select(release_speed, release_pos, pfx_interact, vx_vy_interact, ax_ay_az_interact, vz0)
+
+set.seed(123)
+train_indices <- sample(seq_len(nrow(player_linear_model_pure_combined)), size = 0.7 * nrow(player_linear_model_pure_combined))
+train_data <- player_linear_model_pure_combined[train_indices, ]
+test_data <- player_linear_model_pure_combined[-train_indices, ]
+
+svr_model <- svm(release_speed ~ ., data = train_data, type = "eps-regression", kernel = "radial")
+
+predicted_release_speed_svr <- predict(svr_model, test_data)
+
+ggplot(test_data, aes(x = release_speed, y = predicted_release_speed_svr)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "Actual vs Predicted Release Speed (SVR)",
+       x = "Actual Release Speed",
+       y = "Predicted Release Speed") +
+  theme_minimal()
+
+```
+
+```{r}
+mse_svr <- mean((test_data$release_speed - predicted_release_speed_svr)^2)
+rmse_svr <- sqrt(mse_svr)
+r2_svr <- cor(test_data$release_speed, predicted_release_speed_svr)^2
+
+cat("SVR Model - MSE:", mse_svr, "\n")
+cat("SVR Model - RMSE:", rmse_svr, "\n")
+cat("SVR Model - R²:", r2_svr, "\n")
+
+ggplot(test_data, aes(x = release_speed, y = predicted_release_speed_svr)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "Actual vs Predicted Release Speed (SVR)",
+       x = "Actual Release Speed",
+       y = "Predicted Release Speed") +
+  theme_minimal()
+
+
+```
+```{r}
+#tunned svr
+player_linear_model_pure_combined <- player %>%
+  select(release_speed, release_pos, pfx_interact, vx_vy_interact, ax_ay_az_interact, vz0)
+
+set.seed(123)
+train_indices <- sample(seq_len(nrow(player_linear_model_pure_combined)), size = 0.7 * nrow(player_linear_model_pure_combined))
+train_data <- player_linear_model_pure_combined[train_indices, ]
+test_data <- player_linear_model_pure_combined[-train_indices, ]
+
+tune_grid <- expand.grid(
+  C = 2^(-1:2),
+  sigma = 2^(-2:1)
+)
+
+set.seed(123)
+svr_tuned <- train(
+  release_speed ~ ., data = train_data,
+  method = "svmRadial",
+  tuneGrid = tune_grid,
+  trControl = trainControl(method = "cv", number = 5)
+)
+
+print(svr_tuned$bestTune)
+
+predicted_release_speed_svr_tuned <- predict(svr_tuned, test_data)
+
+mse_svr_tuned <- mean((test_data$release_speed - predicted_release_speed_svr_tuned)^2)
+rmse_svr_tuned <- sqrt(mse_svr_tuned)
+r2_svr_tuned <- cor(test_data$release_speed, predicted_release_speed_svr_tuned)^2
+
+cat("Tuned SVR Model - MSE:", mse_svr_tuned, "\n")
+cat("Tuned SVR Model - RMSE:", rmse_svr_tuned, "\n")
+cat("Tuned SVR Model - R²:", r2_svr_tuned, "\n")
+
+ggplot(test_data, aes(x = release_speed, y = predicted_release_speed_svr_tuned)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "Actual vs Predicted Release Speed (Tuned SVR)",
+       x = "Actual Release Speed",
+       y = "Predicted Release Speed") +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+library(tidyverse)
+library(caret)
+library(e1071)
+
+
+
+svm_importance <- varImp(svr_tuned, scale = FALSE)
+
+ggplot(svm_importance) +
+  geom_bar(aes(x = reorder(rownames(svm_importance$importance), svm_importance$importance$Overall), y = svm_importance$importance$Overall), stat = "identity") +
+  coord_flip() +
+  labs(title = "Feature Importance (Tuned SVR)",
+       x = "Features",
+       y = "Importance") +
+  theme_minimal()
+
+
+
+
+```
+
+
+```{r}
+library(zoo)
+library(dplyr)
+library(forecast)
+library(tseries)
+library(zoo)
+library(dplyr)
+
+
+daily_avg_speed$game_date <- as.Date(daily_avg_speed$game_date)
+
+daily_avg_speed <- daily_avg_speed %>% arrange(game_date)
+
+interpolate_data <- function(data) {
+  full_dates <- seq(min(data$game_date), max(data$game_date), by = "day")
+  
+  full_data <- data.frame(game_date = full_dates) %>% 
+    left_join(data, by = "game_date")
+  
+  full_data$avg_release_speed <- na.approx(full_data$avg_release_speed, na.rm = FALSE)
+  
+  return(full_data)
+}
+
+interpolated_data <- daily_avg_speed %>%
+  mutate(year = format(game_date, "%Y")) %>%
+  group_by(year) %>%
+  group_modify(~ interpolate_data(.x))
+
+interpolated_data <- interpolated_data %>% select(-year)
+
+print(interpolated_data)
+
+write.csv(interpolated_data, "~/interpolated_daily_avg_speed.csv", row.names = FALSE)
+
+
+interpolated_data$game_date <- as.Date(interpolated_data$game_date)
+
+offseason <- data.frame(
+  year = c(2017, 2018, 2019, 2020),
+  start = as.Date(c('2017-10-01', '2018-10-01', '2019-10-01', '2020-10-01')),
+  end = as.Date(c('2018-02-28', '2019-02-28', '2020-02-29', '2021-02-28'))
+)
+
+remove_offseason <- function(data, offseason) {
+  for (i in 1:nrow(offseason)) {
+    data <- data %>% 
+      filter(!(game_date >= offseason$start[i] & game_date <= offseason$end[i]))
+  }
+  return(data)
+}
+
+filtered_data <- remove_offseason(interpolated_data, offseason)
+
+ts_data <- ts(filtered_data$avg_release_speed, frequency = 365)
+
+decomposed <- decompose(ts_data)
+plot(decomposed)
+
+adf_test <- adf.test(ts_data)
+print(adf_test)
+
+diff_data <- diff(ts_data)
+
+adf_test_diff <- adf.test(diff_data)
+print(adf_test_diff)
+
+fit <- auto.arima(ts_data, seasonal = FALSE)
+
+checkresiduals(fit)
+
+predictions <- forecast(fit, h = 100)
+
+print(fit)
+autoplot(predictions) +
+  labs(title = "Pitching Velocity Forecast", x = "Date", y = "Velocity")
+
+
+```
+
+
+```{r}
+player %>%
+  filter(player_name == "Corbin, Patrick", pitch_type == "FF") %>%
+  ggplot(aes(x = release_pos_x, y = release_pos_z, color = factor(Year))) +
+  geom_point(alpha = 0.5) +
+  stat_smooth(aes(group = Year), method = 'loess', se = FALSE) +
+  facet_wrap(~ Year, ncol = 1) +
+  ggtitle("Release Position of Four-Seam Fastballs by Corbin Patrick (2017-2021)") +
+  xlab("Release Position X") +
+  ylab("Release Position Z") +
+  theme_minimal()
+
+```
+
+
+```{r}
+player %>%
+  filter(player_name == "Corbin, Patrick", pitch_type == "FF") %>%
+  ggplot(aes(x = as.Date(game_date), y = release_speed, color = factor(Year))) +
+  geom_point(alpha = 0.5) +
+  stat_smooth(aes(group = Year), method = 'loess', se = FALSE) +
+  ggtitle("Release Speed of Four-Seam Fastballs by Corbin Patrick (2017-2021)") +
+  xlab("Date") +
+  ylab("Release Speed (mph)") +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+numeric_vars <- player %>% 
+  select(release_speed, pfx_x, pfx_z, plate_x, plate_z, 
+         vx0, vy0, vz0, ax, ay, az, release_pos_x, release_pos_z, release_spin_rate, )
+
+
+cor_matrix <- cor(numeric_vars)
+
+print(cor_matrix)
+
+library(GGally)
+ggcorr(cor_matrix, label = TRUE, label_size = 3, hjust = 0.75, size = 3, layout.exp = 1) +
+  ggtitle("Correlation Matrix of Pitching Variables") +
+  theme_minimal()
+
+
+
+```
+
+```{r}
+library(tidyverse)
+
+player_events <- player %>% filter(!is.na(events))
+
+ggplot(player_events, aes(x = events)) +
+  geom_bar() +
+  theme_minimal() +
+  ggtitle("Frequency of Different Events") +
+  xlab("Events") +
+  ylab("Frequency")
+
+ggplot(player_events, aes(x = release_speed, fill = events)) +
+  geom_histogram(binwidth = 1, position = "dodge") +
+  theme_minimal() +
+  ggtitle("Release Speed Distribution by Events") +
+  xlab("Release Speed (mph)") +
+  ylab("Frequency") +
+  facet_wrap(~ pitch_type)
+
+ggplot(player_events, aes(x = release_pos_x, y = release_pos_z, color = events)) +
+  geom_point(alpha = 0.5) +
+  theme_minimal() +
+  ggtitle("Release Position by Events") +
+  xlab("Release Position X") +
+  ylab("Release Position Z")
+
+ggplot(player_events, aes(x = pitch_type, fill = events)) +
+  geom_bar(position = "dodge") +
+  theme_minimal() +
+  ggtitle("Event Distribution by Pitch Type") +
+  xlab("Pitch Type") +
+  ylab("Frequency")
+
+
+```
+
+
+
+```{r}
+library(tidyverse)
+
+
+player_events <- player %>% filter(!is.na(events))
+
+top_events <- player_events %>%
+  group_by(events) %>%
+  summarise(frequency = n()) %>%
+  arrange(desc(frequency)) %>%
+  slice_head(n = 7)
+
+ggplot(top_events, aes(x = reorder(events, frequency), y = frequency)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  ggtitle("Top 7 Frequency of Different Events") +
+  xlab("Events") +
+  ylab("Frequency") +
+  coord_flip()
+
+
+```
+
+
+```{r}
+player_events <- player %>% filter(!is.na(events))
+
+player_events <- player_events %>% filter(!is.na(release_pos_x) & !is.na(release_pos_z) & !is.na(events))
+
+ggplot(player_events, aes(x = release_pos_x, y = release_pos_z, color = events)) +
+  geom_point(alpha = 0.5) +
+  theme_minimal() +
+  ggtitle("Release Position by Events") +
+  xlab("Release Position X") +
+  ylab("Release Position Z")
+```
+
+
+
+```{r}
+
+important_vars <- player %>%
+  select(pitch_type, release_speed, release_pos_x, release_pos_z, events, description)
+
+summary_table <- important_vars %>%
+  summarise(
+    pitch_type_count = n_distinct(pitch_type),
+    avg_release_speed = mean(release_speed, na.rm = TRUE),
+    sd_release_speed = sd(release_speed, na.rm = TRUE),
+    avg_release_pos_x = mean(release_pos_x, na.rm = TRUE),
+    sd_release_pos_x = sd(release_pos_x, na.rm = TRUE),
+    avg_release_pos_z = mean(release_pos_z, na.rm = TRUE),
+    sd_release_pos_z = sd(release_pos_z, na.rm = TRUE),
+    event_count = n_distinct(events),
+    description_count = n_distinct(description)
+  )
+
+write.csv(summary_table, "summary_table.csv", row.names = FALSE)
+
+
+
+```
+
+```{r}
+player_events <- player %>%
+  filter(!is.na(events))
+
+selected_events <- c("field_out", "strikeout", "single", "walk", "double", "home_run")
+
+player_events <- player_events %>%
+  filter(events %in% selected_events)
+
+player_events$events <- factor(player_events$events, levels = selected_events)
+
+numeric_vars <- player_events %>%
+  select_if(is.numeric) %>%
+  colnames()
+
+for (var in numeric_vars) {
+  p <- ggplot(player_events, aes_string(x = "events", y = var, fill = "events")) +
+    geom_violin() +
+    theme_minimal() +
+    ggtitle(paste("Violin Plot of", var, "by Events")) +
+    xlab("Events") +
+    ylab(var)
+}
+
+```
+
+
+
+```{r}
+selected_events <- c("field_out", "strikeout", "single", "walk", "double", "home_run")
+
+player_events <- player_events %>%
+  filter(events %in% selected_events)
+
+numeric_vars <- c("release_speed", "release_pos_x", "release_pos_z", "pfx_x", "pfx_z", 
+                  "plate_x", "plate_z", "vx0", "vy0", "vz0", "ax", "ay", "az", 
+                  "sz_top", "sz_bot", "effective_speed", "release_spin_rate", 
+                  "release_extension", "release_pos_y", "estimated_woba_using_speedangle")
+
+data_numeric <- player_events %>%
+  select(all_of(numeric_vars)) %>%
+  mutate(across(everything(), ~ scale(.)))
+
+data_numeric <- cbind(data_numeric, events = player_events$events)
+
+data_means <- data_numeric %>%
+  group_by(events) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+data_matrix <- as.matrix(data_means[,-1])
+
+rownames(data_matrix) <- data_means$events
+
+pheatmap(data_matrix, 
+         scale = "row", 
+         clustering_distance_rows = "euclidean", 
+         clustering_distance_cols = "euclidean", 
+         clustering_method = "complete", 
+         display_numbers = TRUE,
+         main = "Clustering Heatmap of Pitching Variables by Events")
+
+
+```
+
+
+```{r}
+data_numeric <- player_events %>%
+  select(all_of(numeric_vars))
+
+cor_matrix <- cor(data_numeric, use = "complete.obs")
+
+```
+
+
+```{r}
+ggplot(player_events, aes(x = release_speed, fill = events)) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  ggtitle("Density Plot of Release Speed by Events") +
+  xlab("Release Speed") +
+  ylab("Density")
+
+
+```
+
+
+```{r}
+ggplot(player_events, aes(x = release_speed, y = estimated_woba_using_speedangle, color = events)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  theme_minimal() +
+  ggtitle("LR of Estimated wOBA Using Speed Angle vs. Release Speed by Events") +
+  xlab("Release Speed") +
+  ylab("Estimated wOBA Using Speed Angle")
+
+
+```
+
+```{r}
+player_events <- player_events %>%
+  mutate(log_release_speed = log(release_speed))
+
+ggplot(player_events, aes(x = log_release_speed, y = estimated_woba_using_speedangle, color = events)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  theme_minimal() +
+  ggtitle("Log-Transformed Linear Regression of Estimated wOBA Using Speed Angle vs. Log Release Speed by Events") +
+  xlab("Log Release Speed") +
+  ylab("Estimated wOBA Using Speed Angle")
+
+```
+
+
+
+```{r}
+ggplot(player_events, aes(x = release_speed, y = estimated_woba_using_speedangle, color = events)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  theme_minimal() +
+  ggtitle("Polynomial Regression of Estimated wOBA Using Speed Angle vs. Release Speed by Events") +
+  xlab("Release Speed") +
+  ylab("Estimated wOBA Using Speed Angle")
+
+
+```
+
+
+```{r}
+player_events <- player %>%
+  filter(!is.na(events))
+
+selected_events <- c("field_out", "strikeout", "single", "walk", "double", "home_run")
+
+player_events <- player_events %>%
+  filter(events %in% selected_events)
+
+numeric_vars <- c("release_speed", "release_pos_x", "release_pos_z", "pfx_x", "pfx_z", 
+                  "plate_x", "plate_z", "vx0", "vy0", "vz0", "ax", "ay", "az", 
+                  "sz_top", "sz_bot", "effective_speed", "release_spin_rate", 
+                  "release_extension", "release_pos_y", "estimated_woba_using_speedangle")
+
+player_events <- player_events %>%
+  select(all_of(numeric_vars), events) %>%
+  drop_na()
+
+X <- model.matrix(estimated_woba_using_speedangle ~ release_speed + release_pos_x + release_pos_z + 
+                    pfx_x + pfx_z + plate_x + plate_z + vx0 + vy0 + vz0 + 
+                    ax + ay + az + sz_top + sz_bot + effective_speed + 
+                    release_spin_rate + release_extension + release_pos_y + events, 
+                  data = player_events)
+y <- player_events$estimated_woba_using_speedangle
+
+ridge_model <- cv.glmnet(X, y, alpha = 0)
+
+best_lambda <- ridge_model$lambda.min
+
+player_events$predicted_woba <- predict(ridge_model, s = best_lambda, newx = X)
+
+ggplot(player_events, aes(x = release_speed, y = predicted_woba, color = events)) +
+  geom_point(alpha = 0.5) +
+  theme_minimal() +
+  ggtitle("Ridge Regression of EwOBA Using Speed Angle vs. Release Speed by Events") +
+  xlab("Release Speed") +
+  ylab("Predicted wOBA Using Speed Angle")
+```
